@@ -17,7 +17,9 @@
 package com.networknt.info;
 
 import com.networknt.config.Config;
+import com.networknt.security.JwtHelper;
 import com.networknt.status.Status;
+import com.networknt.utility.FingerPrintUtil;
 import com.networknt.utility.ModuleRegistry;
 import com.networknt.utility.Util;
 import io.undertow.server.HttpHandler;
@@ -28,6 +30,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
 import java.net.InetAddress;
+import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -57,6 +61,7 @@ public class ServerInfoGetHandler implements HttpHandler {
             Map<String, Object> infoMap = new LinkedHashMap<>();
             infoMap.put("deployment", getDeployment());
             infoMap.put("environment", getEnvironment(exchange));
+            infoMap.put("security", getSecurity());
             infoMap.put("specification", Config.getInstance().getJsonMapConfigNoCache("swagger"));
             infoMap.put("component", ModuleRegistry.getRegistry());
             exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
@@ -81,6 +86,13 @@ public class ServerInfoGetHandler implements HttpHandler {
         envMap.put("runtime", getRuntime());
         envMap.put("system", getSystem());
         return envMap;
+    }
+
+    public Map<String, Object> getSecurity() {
+        Map<String, Object> secMap = new LinkedHashMap<>();
+        secMap.put("oauth2FingerPrints", JwtHelper.getFingerPrints());
+        secMap.put("serverFingerPrint", getServerTlsFingerPrint());
+        return secMap;
     }
 
     public Map<String, Object> getHost(HttpServerExchange exchange) {
@@ -133,4 +145,31 @@ public class ServerInfoGetHandler implements HttpHandler {
         }
         return version;
     }
+
+    /**
+     * We can get it from server module but we don't want mutual dependency. So
+     * get it from config and keystore directly
+     *
+     * @return String TLS server certificate finger print
+     */
+    private String getServerTlsFingerPrint() {
+        String fingerPrint = null;
+        Map<String, Object> serverConfig = Config.getInstance().getJsonMapConfigNoCache("server");
+        Map<String, Object> secretConfig = Config.getInstance().getJsonMapConfigNoCache("secret");
+        // load keystore here based on server config and secret config
+        String keystoreName = (String)serverConfig.get("keystoreName");
+        String serverKeystorePass = (String)secretConfig.get("serverKeystorePass");
+        if(keystoreName != null) {
+            try (InputStream stream = Config.getInstance().getInputStreamFromFile(keystoreName)) {
+                KeyStore loadedKeystore = KeyStore.getInstance("JKS");
+                loadedKeystore.load(stream, serverKeystorePass.toCharArray());
+                X509Certificate cert = (X509Certificate)loadedKeystore.getCertificate("server");
+                fingerPrint = FingerPrintUtil.getCertFingerPrint(cert);
+            } catch (Exception e) {
+                logger.error("Unable to load server keystore ", e);
+            }
+        }
+        return fingerPrint;
+    }
+
 }
